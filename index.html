@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>💰 Tiết Kiệm Tiền — Hệ Thống Tự Động</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- Nền hiệu ứng nhẹ, tối ưu không lag -->
+<div class="bg-orbs" aria-hidden="true">
+  <span class="orb orb1"></span>
+  <span class="orb orb2"></span>
+  <span class="orb orb3"></span>
+</div>
+
+<!-- ===== ĐĂNG NHẬP / ĐĂNG KÝ ===== -->
+<section id="authScreen" class="auth-screen">
+  <div class="auth-card glass">
+    <div class="logo">💰</div>
+    <h1>Tiết Kiệm Tiền</h1>
+    <p class="subtitle">Hệ thống tiết kiệm thông minh — tự động nhân lên khi trùng lặp</p>
+
+    <div class="auth-tabs">
+      <button id="tabLogin" class="tab active" type="button">Đăng nhập</button>
+      <button id="tabRegister" class="tab" type="button">Đăng ký</button>
+    </div>
+
+    <form id="authForm" autocomplete="off">
+      <div class="field">
+        <label for="authUser">👤 Tên đăng nhập</label>
+        <input type="text" id="authUser" maxlength="24" placeholder="Nhập tên đăng nhập..." required>
+      </div>
+      <div class="field">
+        <label for="authPass">🔒 Mật khẩu</label>
+        <input type="password" id="authPass" maxlength="64" placeholder="Nhập mật khẩu..." required>
+      </div>
+      <p id="authError" class="auth-error"></p>
+      <button type="submit" id="authSubmit" class="btn btn-primary btn-block">Đăng nhập</button>
+    </form>
+  </div>
+</section>
+
+<!-- ===== MÀN HÌNH CHÍNH ===== -->
+<main id="appScreen" class="app-screen hidden">
+  <header class="app-header glass">
+    <div class="header-left">
+      <span class="logo-mini">💰</span>
+      <div>
+        <h2>Tiết Kiệm Tiền</h2>
+        <span class="hello">Xin chào, <b id="helloName"></b> 👋</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="ping-box" title="Tự động dò ping">
+        <span id="pingDot" class="ping-dot"></span>
+        <span id="pingText">Đang dò ping...</span>
+      </div>
+      <button id="btnLogout" class="btn btn-ghost" type="button">Đăng xuất</button>
+    </div>
+  </header>
+
+  <div class="app-grid">
+    <!-- Cột trái: nhập liệu + mục tiêu -->
+    <section class="col">
+      <!-- Nhập tiền -->
+      <div class="card glass">
+        <h3>➕ Nạp tiền tiết kiệm</h3>
+        <div class="field">
+          <label for="inputAmount">Số tiền (VNĐ)</label>
+          <input type="number" id="inputAmount" min="1000" step="1000" placeholder="VD: 50000">
+        </div>
+        <button id="btnAdd" class="btn btn-primary btn-block" type="button">Thêm vào quỹ 💸</button>
+        <p id="dupNotice" class="dup-notice hidden"></p>
+      </div>
+
+      <!-- Mục tiêu -->
+      <div class="card glass">
+        <h3>🎯 Mục tiêu tiết kiệm</h3>
+        <div class="field">
+          <label for="goalSelect">Chọn mục tiêu</label>
+          <select id="goalSelect">
+            <option value="can_thiet">🛒 Mua thứ cần thiết</option>
+            <option value="dien_thoai">📱 Mua điện thoại</option>
+            <option value="do_can_thiet">👕 Mua đồ cần thiết</option>
+            <option value="laptop">💻 Mua laptop</option>
+            <option value="xe_may">🏍️ Mua xe máy</option>
+            <option value="du_lich">✈️ Du lịch</option>
+            <option value="hoc_tap">🎓 Học tập</option>
+            <option value="khac">✨ Khác (tự nhập)</option>
+          </select>
+        </div>
+        <div class="field" id="customGoalField">
+          <label for="customGoal">Tên mục tiêu của bạn</label>
+          <input type="text" id="customGoal" maxlength="40" placeholder="VD: Mua nhà, mở quán cafe...">
+        </div>
+        <div class="field">
+          <label for="goalAmount">Số tiền mục tiêu (VNĐ)</label>
+          <input type="number" id="goalAmount" min="1000" step="1000" placeholder="VD: 10000000">
+        </div>
+        <div class="date-row">
+          <div class="field">
+            <label for="startDate">📅 Ngày bắt đầu</label>
+            <input type="date" id="startDate">
+          </div>
+          <div class="field">
+            <label for="endDate">🏁 Ngày kết thúc</label>
+            <input type="date" id="endDate">
+          </div>
+        </div>
+        <button id="btnSaveGoal" class="btn btn-secondary btn-block" type="button">Lưu mục tiêu 🎯</button>
+      </div>
+    </section>
+
+    <!-- Cột phải: tổng quan -->
+    <section class="col">
+      <div class="card glass stat-card">
+        <h3>💵 Tổng tiền đã tiết kiệm</h3>
+        <div id="totalMoney" class="big-money">0 ₫</div>
+        <div class="stat-row">
+          <span>🎯 Mục tiêu: <b id="statGoal">—</b></span>
+          <span>📦 Số lần nạp: <b id="statCount">0</b></span>
+        </div>
+        <div class="stat-row">
+          <span>📅 Còn lại: <b id="statDays">—</b> ngày</span>
+          <span>🕒 Lần cập nhật cuối: <b id="statLast">—</b></span>
+        </div>
+        <div class="stat-row stat-months">
+          <span>🗓️ Tự động quy đổi: <b id="statMonths">—</b></span>
+          <span id="countNote"></span>
+        </div>
+      </div>
+
+      <div class="card glass">
+        <div class="progress-head">
+          <h3>📊 Thanh tiến trình tiết kiệm</h3>
+          <span id="progressPct" class="progress-pct">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <p id="progressHint" class="progress-hint">Nạp tiền để bắt đầu hành trình nhé!</p>
+      </div>
+
+      <!-- ⏳ TIỀN ĐANG CHỜ CỘNG VÀO QUỸ -->
+      <div id="pendingActions" class="card glass pending-card hidden">
+        <h3>⏳ Tiền đang chờ cộng vào quỹ</h3>
+        <p class="pending-total">Số tiền chờ: <b id="pendingTotal">0 ₫</b></p>
+        <p class="pending-desc">Tiền nạp hôm nay sẽ được cộng vào quỹ từ 0h ngày mai. Trong lúc chờ, bạn có 2 phương án xử lý:</p>
+        <div class="pending-btns">
+          <button id="btnQuitSaving" class="btn btn-warn" type="button">🛑 Không tiết kiệm nữa</button>
+          <button id="btnRefund" class="btn btn-refund" type="button">💰 Hoàn tiền</button>
+        </div>
+      </div>
+
+      <div class="card glass">
+        <h3>🧾 Lịch sử nạp</h3>
+        <ul id="historyList" class="history-list">
+          <li class="empty">Chưa có giao dịch nào.</li>
+        </ul>
+      </div>
+    </section>
+  </div>
+
+  <!-- ⚙️ CÀI ĐẶT -->
+  <section class="card glass settings-card">
+    <h3>⚙️ Cài đặt</h3>
+    <div class="settings-row">
+      <div>
+        <b>🗑️ Reset dữ liệu tiết kiệm</b>
+        <p>Xóa toàn bộ tiền nạp & mục tiêu, nhưng vẫn giữ lại tài khoản.</p>
+      </div>
+      <button id="btnReset" class="btn btn-danger" type="button">Reset 🗑️</button>
+    </div>
+    <div class="settings-row danger-zone">
+      <div>
+        <b>⚠️ HỦY BỎ TOÀN BỘ — VÙNG NGUY HIỂM</b>
+        <p>Xóa TRẮNG toàn bộ dữ liệu tiết kiệm VÀ tài khoản đăng nhập của bạn. Hành động này không thể hoàn tác!</p>
+      </div>
+      <button id="btnDestroy" class="btn btn-destroy" type="button">HỦY BỎ TOÀN BỘ ☠️</button>
+    </div>
+  </section>
+
+  <footer class="app-footer">
+    Made in VN 🇻🇳 Made by : Nguyễn Chí Dự (HRGBVNGM) ✨⭐✨
+  </footer>
+</main>
+
+<!-- ===== POPUP ĐANG LƯU ===== -->
+<div id="saveModal" class="modal-backdrop hidden">
+  <div class="modal glass">
+    <div class="spinner"></div>
+    <p class="modal-text">⚠️ hệ thống đang lưu lại dữ liệu cho bạn, vui lòng ở lại đây cho đến khi hoàn thành</p>
+  </div>
+</div>
+
+<!-- ===== TOAST ===== -->
+<div id="toast" class="toast"></div>
+
+<script src="script.js"></script>
+</body>
+</html>
