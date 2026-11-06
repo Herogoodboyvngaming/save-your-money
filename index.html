@@ -71,7 +71,6 @@
           <input type="number" id="inputAmount" min="1000" step="1000" placeholder="VD: 50000">
         </div>
         <button id="btnAdd" class="btn btn-primary btn-block" type="button">Thêm vào quỹ 💸</button>
-        <p id="dupNotice" class="dup-notice hidden"></p>
       </div>
 
       <!-- Mục tiêu -->
@@ -167,10 +166,10 @@
     <h3>⚙️ Cài đặt</h3>
     <div class="settings-row">
       <div>
-        <b>🗑️ Reset dữ liệu tiết kiệm</b>
-        <p>Xóa toàn bộ tiền nạp & mục tiêu, nhưng vẫn giữ lại tài khoản.</p>
+        <b>🚫 Hủy bỏ tiết kiệm</b>
+        <p>Xóa toàn bộ tiền đang có trong quỹ tiết kiệm. Tài khoản & mục tiêu vẫn được giữ lại.</p>
       </div>
-      <button id="btnReset" class="btn btn-danger" type="button">Reset 🗑️</button>
+      <button id="btnReset" class="btn btn-danger" type="button">Hủy bỏ 🚫</button>
     </div>
     <div class="settings-row danger-zone">
       <div>
@@ -185,6 +184,16 @@
     Made in VN 🇻🇳 Made by : Nguyễn Chí Dự (HRGBVNGM) ✨⭐✨
   </footer>
 </main>
+
+<!-- ===== POPUP KẾT QUẢ TIẾT KIỆM ===== -->
+<div id="resultModal" class="modal-backdrop hidden">
+  <div class="modal glass result-modal">
+    <div id="resultIcon" class="result-icon">🎉</div>
+    <h2 id="resultTitle" class="result-title">Chúc mừng!</h2>
+    <p id="resultText" class="result-text"></p>
+    <button id="btnResultClose" class="btn btn-primary btn-block" type="button">Tuyệt vời! 🚀</button>
+  </div>
+</div>
 
 <!-- ===== POPUP ĐANG LƯU ===== -->
 <div id="saveModal" class="modal-backdrop hidden">
