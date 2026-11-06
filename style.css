@@ -112,10 +112,6 @@ body {
 .card { padding: 22px; }
 .card h3 { font-size: 16px; margin-bottom: 14px; }
 
-.dup-notice {
-  margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: 13px;
-  background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.4); color: var(--gold);
-}
 
 /* ===== Stats & progress ===== */
 .stat-card { text-align: center; }
@@ -170,16 +166,19 @@ body {
 
 /* ===== Toast ===== */
 .toast {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
-  background: #1e293b; border: 1px solid var(--border); color: var(--text);
-  padding: 12px 22px; border-radius: 12px; font-size: 14px; z-index: 200;
-  opacity: 0; transition: transform .3s, opacity .3s; pointer-events: none;
-  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  position: fixed; bottom: 26px; left: 50%; transform: translate(-50%, 24px) scale(.95);
+  background: linear-gradient(135deg, rgba(30,41,59,.97), rgba(15,23,42,.97));
+  backdrop-filter: blur(12px); border: 1px solid var(--border); color: var(--text);
+  padding: 13px 22px; border-radius: 14px; font-size: 14px; font-weight: 500; z-index: 300;
+  opacity: 0; transition: transform .35s cubic-bezier(.2,.9,.3,1.15), opacity .3s;
+  pointer-events: none; box-shadow: 0 12px 34px rgba(0,0,0,.55);
+  display: flex; align-items: center; gap: 8px;
+  max-width: min(90vw, 480px); text-align: center;
 }
-.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-.toast.success { border-color: var(--green); }
-.toast.warn { border-color: var(--gold); }
-.toast.error { border-color: var(--red); }
+.toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+.toast.success { border-left: 4px solid var(--green); }
+.toast.warn { border-left: 4px solid var(--gold); }
+.toast.error { border-left: 4px solid var(--red); }
 
 /* ===== Dòng quy đổi tháng & ghi chú tính tiền ===== */
 .stat-months { padding-top: 8px; border-top: 1px dashed rgba(255,255,255,.08); margin-top: 6px; }
@@ -230,3 +229,31 @@ body {
   .orb, .logo, .progress-fill, .btn-destroy, .stat-card .big-money { animation: none !important; }
   .card { transition: none; }
 }
+
+/* =========================================================
+   🎉 POPUP KẾT QUẢ — chúc mừng / thất bại
+   ========================================================= */
+.modal-backdrop { animation: fadeIn .25s ease; }
+@keyframes fadeIn { from { opacity: 0; } }
+.result-modal { max-width: 400px; }
+.result-icon { font-size: 64px; animation: popIn .5s cubic-bezier(.2,1.4,.4,1); }
+.result-title { font-size: 22px; margin: 12px 0 8px; }
+.result-modal.success .result-title { color: var(--green); }
+.result-modal.fail .result-title { color: var(--red); }
+.result-text { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 20px; }
+.result-modal.success { border-color: rgba(34,197,94,.45); box-shadow: 0 0 50px rgba(34,197,94,.18); }
+.result-modal.fail { border-color: rgba(239,68,68,.45); box-shadow: 0 0 50px rgba(239,68,68,.15); }
+@keyframes popIn { from { transform: scale(0) rotate(-20deg); } }
+
+/* =========================================================
+   ✨ Nâng cấp giao diện — mượt cho RAM 3GB+
+   ========================================================= */
+.progress-bar { position: relative; overflow: hidden; }
+.progress-bar::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.25), transparent);
+  animation: barShine 2.8s ease-in-out infinite;
+}
+@keyframes barShine { 0% { transform: translateX(-100%);} 100% { transform: translateX(100%);} }
+.app-header { border-top: 3px solid transparent; border-image: linear-gradient(90deg, var(--gold), var(--pink), #8b5cf6) 1; }
+.auth-card { border-top: 3px solid transparent; border-image: linear-gradient(90deg, #6366f1, #ec4899, var(--gold)) 1; }
