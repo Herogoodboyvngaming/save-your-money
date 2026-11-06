@@ -2,7 +2,9 @@
    💰 Tiết Kiệm Tiền — Made in VN 🇻🇳
    Made by : Nguyễn Chí Dự (HRGBVNGM) ✨⭐✨
    Hệ thống:
-   - Auth localStorage thật, tự động nhân lại khi trùng lặp
+   - Auth localStorage thật
+   - Popup chúc mừng khi đạt đủ tiến trình, popup thất bại khi quá hạn chưa đạt
+   - Nút "Hủy bỏ tiết kiệm" trong Cài đặt: xóa toàn bộ tiền trong quỹ
    - Dò ping tự động
    - Lưu TỰ ĐỘNG theo mốc thời gian NGẪU NHIÊN, KHÔNG LIÊN TỤC
      (chạy độc lập, không bị thao tác của user reset lịch lưu)
@@ -16,7 +18,6 @@
 /* ---------- Hằng số ---------- */
 const LS_USERS = "tk_users";
 const LS_SESSION = "tk_session";
-const DUP_MULTIPLIER = 2;
 const INACTIVE_DAYS = 7;
 const MIN_DEPOSIT = 10000; // 💰 nạp tối thiểu 10.000₫, dưới mức này KHÔNG cho
 // Lưu tự động: mốc NGẪU NHIÊN 15s – 90s, KHÔNG liên tục,
@@ -49,9 +50,10 @@ function hashStr(str) {
 }
 
 let toastTimer = null;
+const TOAST_ICONS = { success: "✅", warn: "⚠️", error: "⛔" };
 function toast(msg, type = "success") {
   const t = $("toast");
-  t.textContent = msg;
+  t.textContent = (TOAST_ICONS[type] || "💬") + " " + msg;
   t.className = "toast show " + type;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.className = "toast"), 3000);
@@ -239,6 +241,9 @@ function render() {
   $("goalAmount").value = data.goalAmount || "";
   $("startDate").value = data.startDate || "";
   $("endDate").value = data.endDate || "";
+
+  // 🎉 Kiểm tra kết quả tiết kiệm (chúc mừng / thất bại)
+  checkGoalResult();
 }
 
 /* =========================================================
@@ -246,21 +251,10 @@ function render() {
    ========================================================= */
 $("btnAdd").addEventListener("click", () => {
   const raw = parseFloat($("inputAmount").value);
-  const notice = $("dupNotice");
-  notice.classList.add("hidden");
 
   if (!raw || raw < MIN_DEPOSIT) return toast(`⚠️ Số tiền tối thiểu là ${fmt(MIN_DEPOSIT)}, dưới mức này không cho nạp!`, "error");
 
-  let value = raw;
-  const dupCount = data.amounts.filter(a => a.value === raw).length;
-
-  if (dupCount > 0) {
-    value = raw * Math.pow(DUP_MULTIPLIER, dupCount);
-    notice.textContent = `🔁 Phát hiện trùng lặp ${dupCount} lần với số tiền ${fmt(raw)} → hệ thống tự động nhân lên ×${Math.pow(DUP_MULTIPLIER, dupCount)} = ${fmt(value)}`;
-    notice.classList.remove("hidden");
-    toast(`✨ Trùng lặp phát hiện! Tự động nhân ×${Math.pow(DUP_MULTIPLIER, dupCount)}`, "warn");
-  }
-
+  const value = raw;
   const at = Date.now();
   const countFrom = computeCountFrom(at);
   data.amounts.push({ value, at, countFrom });
@@ -315,11 +309,12 @@ $("btnSaveGoal").addEventListener("click", () => {
    🗑️ RESET THỦ CÔNG
    ========================================================= */
 $("btnReset").addEventListener("click", () => {
-  if (!confirm("Bạn chắc chắn muốn XÓA TOÀN BỘ dữ liệu tiết kiệm?")) return;
-  data = defaultData();
-  persistNow();
+  if (!data.amounts.length) return toast("⚠️ Không có tiền nào trong quỹ để hủy!", "error");
+  if (!confirm("🚫 Hủy bỏ tiết kiệm? Toàn bộ tiền trong quỹ sẽ bị xóa (tài khoản & mục tiêu vẫn giữ lại)!")) return;
+  data.amounts = [];
   render();
-  toast("🗑️ Đã reset toàn bộ dữ liệu!", "warn");
+  persistNow();
+  toast("🚫 Đã hủy bỏ tiết kiệm — toàn bộ tiền trong quỹ đã bị xóa!", "warn");
 });
 
 /* =========================================================
@@ -370,6 +365,50 @@ $("btnDestroy").addEventListener("click", () => {
   $("authUser").value = "";
   toast("☠️ Đã hủy bỏ toàn bộ dữ liệu và tài khoản!", "error");
 });
+
+/* =========================================================
+   🎉 POPUP CHÚC MỪNG / THẤT BẠI — theo dõi tiến trình tự động
+   ========================================================= */
+let winShown = false, failShown = false;
+
+function showResult(type, icon, title, text) {
+  const modal = $("resultModal");
+  modal.querySelector(".modal").className = "modal glass result-modal " + type;
+  $("resultIcon").textContent = icon;
+  $("resultTitle").textContent = title;
+  $("resultText").textContent = text;
+  modal.classList.remove("hidden");
+}
+
+$("btnResultClose").addEventListener("click", () => {
+  $("resultModal").classList.add("hidden");
+});
+
+// Tự động phát hiện kết quả mỗi lần render: đủ tiến trình → chúc mừng,
+// quá hạn mà chưa đủ → thất bại
+function checkGoalResult() {
+  if (!data || data.goalAmount <= 0) return;
+  const total = totalSaved();
+  if (total >= data.goalAmount) {
+    if (!winShown) {
+      winShown = true;
+      showResult("success", "🎉", "Chúc mừng bạn!",
+        `Bạn đã hoàn thành mục tiêu ${fmt(data.goalAmount)}! Tổng tiền tiết kiệm hiện tại: ${fmt(total)}. Bạn thật tuyệt vời, tiếp tục phát huy nhé!`);
+    }
+    failShown = false;
+  } else if (data.endDate && dayStart(new Date(data.endDate)) < dayStart(Date.now())) {
+    if (!failShown) {
+      failShown = true;
+      const pct = Math.round((total / data.goalAmount) * 100);
+      showResult("fail", "😢", "Tiếc quá, chưa đạt mục tiêu!",
+        `Thời hạn tiết kiệm đã kết thúc nhưng bạn mới đạt ${fmt(total)} / ${fmt(data.goalAmount)} (${pct}%). Đừng nản, hãy đặt mục tiêu mới và cố gắng hơn nhé!`);
+    }
+    winShown = false;
+  } else {
+    winShown = false;
+    failShown = false;
+  }
+}
 
 /* =========================================================
    💾 LƯU TỰ ĐỘNG — MỐC THỜI GIAN NGẪU NHIÊN, KHÔNG LIÊN TỤC
