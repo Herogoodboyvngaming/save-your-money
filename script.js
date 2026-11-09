@@ -1,520 +1,811 @@
-/* =========================================================
-   💰 Tiết Kiệm Tiền — Made in VN 🇻🇳
-   Made by : Nguyễn Chí Dự (HRGBVNGM) ✨⭐✨
-   Hệ thống:
-   - Auth localStorage thật
-   - Popup chúc mừng khi đạt đủ tiến trình, popup thất bại khi quá hạn chưa đạt
-   - Nút "Hủy bỏ tiết kiệm" trong Cài đặt: xóa toàn bộ tiền trong quỹ
-   - Dò ping tự động
-   - Lưu TỰ ĐỘNG theo mốc thời gian NGẪU NHIÊN, KHÔNG LIÊN TỤC
-     (chạy độc lập, không bị thao tác của user reset lịch lưu)
-   - NGÀY ĐẦU TIẾT KIỆM KHÔNG TÍNH TIỀN — tiền nạp trong ngày đầu
-     sẽ được tính từ 0h ngày hôm sau
-   - Tự động tính số ngày còn lại và quy đổi ra THÁNG bên dưới
-   - Reset sau 7 ngày không cập nhật
-   ========================================================= */
-"use strict";
+/* ============================================================
+   TIẾT KIỆM TIỀN - Made in VN 🇻🇳 by Nguyễn Chí Dự (HRGBVNGM)
+   v2: Ví điện tử · Nhiều quỹ (10) · Avatar · Giờ VN · MK mạnh
+   ============================================================ */
+'use strict';
 
-/* ---------- Hằng số ---------- */
-const LS_USERS = "tk_users";
-const LS_SESSION = "tk_session";
-const INACTIVE_DAYS = 7;
-const MIN_DEPOSIT = 10000; // 💰 nạp tối thiểu 10.000₫, dưới mức này KHÔNG cho
-// Lưu tự động: mốc NGẪU NHIÊN 15s – 90s, KHÔNG liên tục,
-// mỗi lần lưu xong mới rút thăm mốc kế tiếp
-const SAVE_MIN_MS = 15000;
-const SAVE_MAX_MS = 90000;
-const DAY_MS = 86400000;
-const GOAL_LABELS = {
-  can_thiet: "🛒 Mua thứ cần thiết",
-  dien_thoai: "📱 Mua điện thoại",
-  do_can_thiet: "👕 Mua đồ cần thiết",
-  laptop: "💻 Mua laptop",
-  xe_may: "🏍️ Mua xe máy",
-  du_lich: "✈️ Du lịch",
-  hoc_tap: "🎓 Học tập"
+/* ---------- Helpers ---------- */
+const $ = id => document.getElementById(id);
+const fmt = n => (n || 0).toLocaleString('vi-VN') + ' ₫';
+const nowMs = () => Date.now();
+const dayMs = 86400000;
+const pad = n => String(n).padStart(2, '0');
+const fmtTime = ms => { const d = new Date(ms); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const fmtDate = ms => { const d = new Date(ms); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`; };
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const parseDate = s => new Date(s + 'T00:00:00').getTime();
+const uid = () => Math.random().toString(36).slice(2, 9);
+const rand = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+const GOAL_ICONS = { 'Mua thứ cần thiết':'🛒','Mua điện thoại':'📱','Mua đồ cần thiết':'👕','Mua laptop':'💻','Du lịch':'✈️','Học phí / khóa học':'📚','Dự phòng khẩn cấp':'🛡️','Mua xe máy':'🏍️','Mục tiêu tự do':'⭐' };
+const MAX_FUNDS = 10;
+
+/* ---------- Storage ---------- */
+const LSK = {
+  USERS: 'tk_users',
+  SESSION: 'tk_session',
+  dataKey: u => 'tk_data_' + u
 };
+const loadUsers = () => JSON.parse(localStorage.getItem(LSK.USERS) || '{}');
+const saveUsers = u => localStorage.setItem(LSK.USERS, JSON.stringify(u));
+const hash = s => btoa(unescape(encodeURIComponent('🧂' + s + '🧂')));
 
-/* ---------- Utils ---------- */
-const $ = (id) => document.getElementById(id);
-const fmt = (n) => new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND" }).format(n);
-const fmtTime = (ts) => new Date(ts).toLocaleString("vi-VN", { hour12: false });
-const fmtDate = (ts) => new Date(ts).toLocaleDateString("vi-VN");
-// 0h00 của một ngày bất kỳ (ms) — dùng để so ngày chuẩn xác
-const dayStart = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); };
-
-function hashStr(str) {
-  let h = 5381;
-  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
-  return "h" + h.toString(36) + "_" + str.length;
-}
-
-let toastTimer = null;
-const TOAST_ICONS = { success: "✅", warn: "⚠️", error: "⛔" };
-function toast(msg, type = "success") {
-  const t = $("toast");
-  t.textContent = (TOAST_ICONS[type] || "💬") + " " + msg;
-  t.className = "toast show " + type;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = "toast"), 3000);
-}
-
-/* ---------- Trạng thái ---------- */
+/* ---------- Global state ---------- */
 let currentUser = null;
-let data = null;
-let saveTimer = null;        // timer lưu tự động độc lập
-let isSaving = false;
-let pendingSnapshot = null;
+let users = {};
+let state = null;              // {wallet, avatar, funds[], history[], pending[], lastActivity, lastSave}
+let selectedFundId = null;
+let saveTimer = null, pendingTimer = null, pingTimer = null, clockTimer = null;
+let isSaving = false, savingCancelled = false;
 
-/* =========================================================
+const defaultState = () => ({ wallet: 0, avatar: '', funds: [], history: [], pending: [], lastActivity: nowMs(), lastSave: 0 });
+
+/* ============================================================
+   TOAST SYSTEM
+   ============================================================ */
+function toast(msg, type = 'info', duration = 3200) {
+  const icons = { success: '✅', error: '❌', info: '💡', warn: '⚠️' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span class="t-icon">${icons[type] || '💡'}</span><span>${msg}</span>`;
+  $('toastContainer').appendChild(el);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, duration);
+}
+
+/* ============================================================
+   VIETNAM REAL-TIME CLOCK (GMT+7)
+   ============================================================ */
+function tickClock() {
+  try {
+    const t = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false, weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    $('vnClock').textContent = '🕒 ' + t.replace(',', ' ·') + ' (GMT+7)';
+  } catch {
+    const d = new Date();
+    $('vnClock').textContent = `🕒 ${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+}
+function startClock() {
+  clearInterval(clockTimer);
+  tickClock();
+  clockTimer = setInterval(tickClock, 1000);
+}
+
+/* ============================================================
    AUTH
-   ========================================================= */
-function getUsers() {
-  try { return JSON.parse(localStorage.getItem(LS_USERS)) || {}; }
-  catch { return {}; }
-}
-function saveUsers(users) { localStorage.setItem(LS_USERS, JSON.stringify(users)); }
+   ============================================================ */
+function initAuth() {
+  users = loadUsers();
+  $('tabLogin').onclick = () => switchTab('login');
+  $('tabRegister').onclick = () => switchTab('register');
+  $('btnLogin').onclick = doLogin;
+  $('btnRegister').onclick = doRegister;
+  $('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  $('regPass2').addEventListener('keydown', e => { if (e.key === 'Enter') doRegister(); });
+  $('regPass').addEventListener('input', checkStrength);
 
-let authMode = "login";
-$("tabLogin").addEventListener("click", () => setAuthMode("login"));
-$("tabRegister").addEventListener("click", () => setAuthMode("register"));
-
-function setAuthMode(mode) {
-  authMode = mode;
-  $("tabLogin").classList.toggle("active", mode === "login");
-  $("tabRegister").classList.toggle("active", mode === "register");
-  $("authSubmit").textContent = mode === "login" ? "Đăng nhập" : "Đăng ký 🚀";
-  $("authError").textContent = "";
+  const sess = sessionStorage.getItem(LSK.SESSION) || localStorage.getItem(LSK.SESSION);
+  if (sess && users[sess]) enterApp(sess);
 }
 
-$("authForm").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const user = $("authUser").value.trim().toLowerCase();
-  const pass = $("authPass").value;
-  const users = getUsers();
+function switchTab(tab) {
+  $('tabLogin').classList.toggle('active', tab === 'login');
+  $('tabRegister').classList.toggle('active', tab === 'register');
+  $('loginForm').classList.toggle('hidden', tab !== 'login');
+  $('registerForm').classList.toggle('hidden', tab !== 'register');
+  authMsg('');
+}
 
-  if (user.length < 3) return ($("authError").textContent = "Tên đăng nhập tối thiểu 3 ký tự.");
-  if (pass.length < 4) return ($("authError").textContent = "Mật khẩu tối thiểu 4 ký tự.");
+function authMsg(msg, ok = false) {
+  const el = $('authMsg');
+  if (!msg) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.className = 'auth-msg ' + (ok ? 'ok' : 'error');
+  el.textContent = msg;
+}
 
-  if (authMode === "register") {
-    if (users[user]) return ($("authError").textContent = "Tên đăng nhập đã tồn tại!");
-    users[user] = { hash: hashStr(user + "::" + pass), created: Date.now() };
-    saveUsers(users);
-    toast("🎉 Đăng ký thành công! Mở đăng nhập nha.", "success");
-    setAuthMode("login");
-  } else {
-    if (!users[user]) return ($("authError").textContent = "Tài khoản không tồn tại!");
-    if (users[user].hash !== hashStr(user + "::" + pass))
-      return ($("authError").textContent = "Sai mật khẩu rồi bạn ơi!");
-    localStorage.setItem(LS_SESSION, user);
-    startApp(user);
+/* --- Password strength --- */
+function strengthScore(p) {
+  let s = 0;
+  if (p.length >= 8) s++;
+  if (p.length >= 12) s++;
+  if (/[a-z]/.test(p) && /[A-Z]/.test(p)) s++;
+  if (/\d/.test(p)) s++;
+  if (/[^A-Za-z0-9]/.test(p)) s++;
+  return s;
+}
+function isStrongPassword(p) {
+  return p.length >= 8 && /[a-z]/.test(p) && /[A-Z]/.test(p) && /\d/.test(p) && /[^A-Za-z0-9]/.test(p);
+}
+function checkStrength() {
+  const p = $('regPass').value;
+  const fill = $('strengthFill'), label = $('strengthLabel');
+  if (!p) { fill.style.width = '0%'; label.textContent = 'Độ mạnh mật khẩu'; return; }
+  const s = strengthScore(p);
+  const strong = isStrongPassword(p);
+  const pct = Math.min(100, s * 20);
+  fill.style.width = pct + '%';
+  fill.style.background = strong ? 'linear-gradient(90deg,#00e676,#00cec9)' : (s <= 2 ? '#ff5252' : '#ffd54f');
+  label.textContent = strong ? '💪 Mật khẩu mạnh — có thể đăng ký' : '⚠️ Mật khẩu yếu — cần ≥8 ký tự, HOA, thường, số và ký tự đặc biệt';
+  label.style.color = strong ? '#7dffb0' : '#ff9a9a';
+}
+
+function shakeCard() {
+  const card = $('authCard');
+  card.classList.remove('shake');
+  void card.offsetWidth;
+  card.classList.add('shake');
+  setTimeout(() => card.classList.remove('shake'), 600);
+}
+
+function doRegister() {
+  const u = $('regUser').value.trim();
+  const g = $('regGmail').value.trim().toLowerCase();
+  const p = $('regPass').value;
+  const p2 = $('regPass2').value;
+
+  if (u.length < 3) { shakeCard(); return authMsg('❌ Tên đăng nhập tối thiểu 3 ký tự!'); }
+  if (/\s/.test(u)) { shakeCard(); return authMsg('❌ Tên đăng nhập không được có khoảng trắng!'); }
+  if (!/^[a-z0-9._%+-]+@gmail\.com$/.test(g)) { shakeCard(); return authMsg('❌ Gmail không hợp lệ! Bắt buộc nhập đúng định dạng ...@gmail.com'); }
+
+  /* strong password enforcement */
+  if (!isStrongPassword(p)) {
+    shakeCard();
+    toast('🚫 Mật khẩu quá yếu! Cần ≥8 ký tự gồm chữ HOA, chữ thường, số và ký tự đặc biệt.', 'error', 4500);
+    return authMsg('❌ Mật khẩu yếu! Yêu cầu: ≥8 ký tự, có HOA, thường, số, ký tự đặc biệt.');
   }
-});
+  if (p !== p2) { shakeCard(); return authMsg('❌ Xác nhận mật khẩu không khớp!'); }
 
-$("btnLogout").addEventListener("click", () => {
-  stopAutoSave();
-  localStorage.removeItem(LS_SESSION);
-  currentUser = null;
-  data = null;
-  $("appScreen").classList.add("hidden");
-  $("authScreen").classList.remove("hidden");
-  $("authPass").value = "";
-});
+  const usersNow = loadUsers();
+  if (usersNow[u]) { shakeCard(); return authMsg('❌ Tên đăng nhập đã tồn tại!'); }
+  if (Object.values(usersNow).some(x => x.gmail === g)) { shakeCard(); return authMsg('❌ Gmail này đã được dùng đăng ký tài khoản khác!'); }
 
-/* =========================================================
-   DỮ LIỆU
-   ========================================================= */
-const dataKey = () => "tk_data_" + currentUser;
+  usersNow[u] = { pass: hash(p), gmail: g, createdAt: nowMs() };
+  saveUsers(usersNow);
+  authMsg('✅ Đăng ký thành công! Hãy đăng nhập.', true);
+  toast('🎉 Tạo tài khoản thành công!', 'success');
+  setTimeout(() => switchTab('login'), 900);
+  $('regUser').value = $('regGmail').value = $('regPass').value = $('regPass2').value = '';
+  $('strengthFill').style.width = '0%'; $('strengthLabel').textContent = 'Độ mạnh mật khẩu'; $('strengthLabel').style.color = '';
+}
 
-function defaultData() {
-  return {
-    amounts: [],            // [{value, at, countFrom}]
-    goalType: "can_thiet",
-    goalCustom: "",
-    goalAmount: 0,
-    startDate: "",
-    endDate: "",
-    lastUpdate: Date.now()
+function doLogin() {
+  const u = $('loginUser').value.trim();
+  const p = $('loginPass').value;
+  const usersNow = loadUsers();
+  const acc = usersNow[u];
+  if (!acc || acc.pass !== hash(p)) { shakeCard(); return authMsg('❌ Sai tên đăng nhập hoặc mật khẩu!'); }
+  sessionStorage.setItem(LSK.SESSION, u);
+  localStorage.setItem(LSK.SESSION, u);
+  enterApp(u);
+}
+
+function doLogout() {
+  stopTimers();
+  sessionStorage.removeItem(LSK.SESSION);
+  localStorage.removeItem(LSK.SESSION);
+  currentUser = null; state = null; selectedFundId = null;
+  $('appScreen').classList.add('hidden');
+  $('authScreen').classList.remove('hidden');
+  $('loginPass').value = '';
+  authMsg('');
+}
+
+/* ============================================================
+   AVATAR UPLOAD (resize để nhẹ, lưu localStorage)
+   ============================================================ */
+function initAvatar() {
+  $('avatarInput').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return toast('❌ File phải là hình ảnh!', 'error');
+    if (file.size > 5 * 1024 * 1024) return toast('❌ Ảnh quá lớn (tối đa 5MB)!', 'error');
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const size = 128;
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        const min = Math.min(img.width, img.height);
+        ctx.drawImage(img, (img.width - min) / 2, (img.height - min) / 2, min, min, 0, 0, size, size);
+        state.avatar = canvas.toDataURL('image/jpeg', 0.82);
+        persist();
+        renderAvatar();
+        toast('📷 Đã cập nhật avatar!', 'success');
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  });
+}
+function renderAvatar() {
+  const img = $('avatarImg');
+  img.src = state && state.avatar ? state.avatar : defaultAvatar(currentUser);
+}
+function defaultAvatar(name) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 96;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 96, 96);
+  grad.addColorStop(0, '#6c5ce7'); grad.addColorStop(1, '#00cec9');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, 96, 96);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 42px Segoe UI';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(((name || '?')[0] || '?').toUpperCase(), 48, 52);
+  return c.toDataURL();
+}
+
+/* ============================================================
+   APP ENTRY / LOAD
+   ============================================================ */
+function enterApp(user) {
+  currentUser = user;
+  $('authScreen').classList.add('hidden');
+  $('appScreen').classList.remove('hidden');
+  $('userName').textContent = user;
+
+  loadState();
+  checkInactivityReset();
+  migrateLegacy();
+  if (state.funds.length && !selectedFundId) selectedFundId = state.funds[0].id;
+  checkPending(true);
+  renderAll();
+
+  startClock();
+  startAutoSave();
+  startPendingLoop();
+  startPingLoop();
+  initAvatar();
+  toast(`👋 Chào mừng trở lại, ${user}!`, 'success');
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(LSK.dataKey(currentUser));
+    state = raw ? Object.assign(defaultState(), JSON.parse(raw)) : defaultState();
+    if (!Array.isArray(state.funds)) state.funds = [];
+    if (!Array.isArray(state.pending)) state.pending = [];
+    if (!Array.isArray(state.history)) state.history = [];
+  } catch { state = defaultState(); }
+}
+
+/* Convert dữ liệu v1 (1 quỹ duy nhất) sang v2 */
+function migrateLegacy() {
+  if (state.goalType && !state.funds.some(f => f.goalType === state.goalType)) {
+    state.funds.push({
+      id: uid(), goalType: state.goalType, goalAmount: state.goalAmount || 0,
+      saved: state.saved || 0, startDate: state.startDate || todayStr(),
+      endDate: state.endDate || todayStr(), createdAt: state.createdAt || nowMs(),
+      successShown: !!state.successShown, failShown: !!state.failShown
+    });
+    delete state.goalType; delete state.goalAmount; delete state.saved;
+    delete state.startDate; delete state.endDate;
+    delete state.successShown; delete state.failShown; delete state.createdAt;
+    persist();
+  }
+}
+
+function persist() {
+  if (!state || !currentUser) return;
+  state.lastActivity = nowMs();
+  state.lastSave = nowMs();
+  try { localStorage.setItem(LSK.dataKey(currentUser), JSON.stringify(state)); } catch {}
+}
+
+/* ============================================================
+   7-DAY AUTO RESET
+   ============================================================ */
+function checkInactivityReset() {
+  if (nowMs() - state.lastActivity > 7 * dayMs) {
+    const total = state.funds.reduce((s, f) => s + f.saved, 0);
+    state = defaultState();
+    persist();
+    toast('🔄 7 ngày không hoạt động — toàn bộ quỹ đã reset về 0!', 'warn', 5000);
+    showResult(false, '⏰ Quỹ đã tự reset!',
+      `Bạn không cập nhật trong 7 ngày. Toàn bộ ${fmt(total)} trong các quỹ đã về 0 và ví được giữ nguyên.`);
+  }
+}
+
+/* ============================================================
+   WALLET
+   ============================================================ */
+function topupWallet() {
+  const amount = parseInt($('topupAmount').value, 10);
+  if (!amount || amount < 1000) return toast('⚠️ Số tiền nạp ví tối thiểu 1.000 ₫!', 'warn');
+  state.wallet += amount;
+  state.history.unshift({ id: uid(), amount, time: nowMs(), mode: 'topup', status: 'done' });
+  persist();
+  $('topupAmount').value = '';
+  toast(`💳 Đã nạp ${fmt(amount)} vào ví!`, 'success');
+  renderAll();
+}
+
+/* ============================================================
+   FUNDS (tối đa 10, không trùng)
+   ============================================================ */
+const selFund = () => state.funds.find(f => f.id === selectedFundId) || null;
+
+function startPlan() {
+  const goalType = $('goalType').value;
+  const goalAmount = parseInt($('goalAmount').value, 10);
+  const startAmount = parseInt($('startAmount').value, 10) || 0;
+  const startDate = $('startDate').value;
+  const endDate = $('endDate').value;
+
+  if (state.funds.length >= MAX_FUNDS) return toast(`🚫 Đã đạt giới hạn ${MAX_FUNDS} quỹ! Hãy xóa quỹ cũ trước.`, 'error');
+  if (!goalType) return toast('⚠️ Vui lòng chọn mục tiêu tiết kiệm!', 'warn');
+  if (state.funds.some(f => f.goalType === goalType)) return toast(`❌ Quỹ "${goalType}" đã tồn tại — không cho phép trùng lặp!`, 'error');
+  if (!goalAmount || goalAmount < 1000) return toast('⚠️ Số tiền mục tiêu tối thiểu 1.000 ₫!', 'warn');
+  if (!startDate || !endDate) return toast('⚠️ Vui lòng chọn ngày bắt đầu và kết thúc!', 'warn');
+  if (parseDate(endDate) < parseDate(startDate)) return toast('❌ Ngày kết thúc phải sau ngày bắt đầu!', 'error');
+  if (startAmount > 0 && startAmount > state.wallet) return toast(`❌ Ví không đủ! Cần ${fmt(startAmount)} nhưng ví chỉ có ${fmt(state.wallet)}`, 'error');
+
+  if (startAmount > 0) {
+    state.wallet -= startAmount;
+    state.history.unshift({ id: uid(), amount: startAmount, time: nowMs(), mode: 'start', status: 'done' });
+  }
+  const fund = {
+    id: uid(), goalType, goalAmount, saved: startAmount,
+    startDate, endDate, createdAt: nowMs(), successShown: false, failShown: false
   };
+  state.funds.push(fund);
+  selectedFundId = fund.id;
+  persist();
+  hideSetup();
+  renderAll();
+  toast(`🎯 Đã tạo quỹ "${goalType}"! (${state.funds.length}/${MAX_FUNDS})`, 'success');
 }
 
-function loadData() {
-  try { data = JSON.parse(localStorage.getItem(dataKey())) || defaultData(); }
-  catch { data = defaultData(); }
-
-  // Migrate dữ liệu cũ thiếu countFrom → tính ngay lúc nạp
-  data.amounts.forEach(a => { if (a.countFrom === undefined) a.countFrom = a.at; });
-
-  // Reset nếu quá 7 ngày không cập nhật
-  if (Date.now() - (data.lastUpdate || 0) > INACTIVE_DAYS * DAY_MS) {
-    data = defaultData();
-    persistNow();
-    toast(`🔄 Hệ thống đã reset — bạn im lặng quá ${INACTIVE_DAYS} ngày rồi!`, "warn");
-  }
+function deleteFund(id) {
+  const f = state.funds.find(x => x.id === id);
+  if (!f) return;
+  askConfirm('🗑️ Xóa quỹ?',
+    `Quỹ "${f.goalType}" sẽ bị xóa. Số tiền ${fmt(f.saved)} trong quỹ sẽ tự động hoàn về ví.`,
+    () => {
+      state.wallet += f.saved;
+      state.pending = state.pending.filter(p => p.fundId !== id);
+      state.funds = state.funds.filter(x => x.id !== id);
+      if (selectedFundId === id) selectedFundId = state.funds.length ? state.funds[0].id : null;
+      persist();
+      renderAll();
+      toast(`🗑️ Đã xóa quỹ và hoàn ${fmt(f.saved)} về ví!`, 'info');
+    });
 }
 
-function persistNow() {
-  data.lastUpdate = Date.now();
-  localStorage.setItem(dataKey(), JSON.stringify(data));
+/* ============================================================
+   DATE LOGIC
+   ============================================================ */
+function updateDateInfo() {
+  const s = $('startDate').value, e = $('endDate').value;
+  const box = $('dateInfo');
+  if (!s || !e) { box.innerHTML = '<span class="date-info-chip">⏳ Chọn ngày để hệ thống tự tính</span>'; return; }
+  if (parseDate(e) < parseDate(s)) { box.innerHTML = '<span class="date-info-chip" style="border-color:rgba(255,82,82,.4);color:#ff9a9a">❌ Ngày kết thúc phải sau ngày bắt đầu</span>'; return; }
+  const total = Math.round((parseDate(e) - parseDate(s)) / dayMs) + 1;
+  const months = (total / 30).toFixed(1);
+  box.innerHTML =
+    `<span class="date-info-chip">📅 Tổng: ${total} ngày</span>` +
+    `<span class="date-info-chip">🗓️ Khoảng: ${months} tháng</span>` +
+    `<span class="date-info-chip">🌙 Ngày đầu tiên không tính tiền — bắt đầu tính từ ngày hôm sau</span>`;
 }
 
-/* =========================================================
-   💵 QUY TẮC TÍNH TIỀN:
-   - Ngày bắt đầu tiết kiệm (startDate) KHÔNG tính tiền
-   - Tiền nạp trong ngày đầu → chờ đến 0h ngày HÔM SAU mới được tính
-   - Tiền nạp từ ngày thứ 2 trở đi → tính ngay
-   ========================================================= */
-function computeCountFrom(atMs) {
-  // ⏳ QUY TẮC MỚI: tiền tiết kiệm KHÔNG tính trong ngày nạp,
-  // chỉ được tính từ 0h00 ngày HÔM SAU (kể cả ngày đầu tiết kiệm)
-  return dayStart(atMs) + DAY_MS;
-}
+/* ============================================================
+   ADD MONEY FROM WALLET (3 modes)
+   ============================================================ */
+const MODE_LABELS = { instant: '⚡ Ngay lập tức', afterHour: '⏳ Đếm ngược 1 tiếng', scheduled: '🕒 Theo lịch hẹn', start: '🚀 Tiền khởi tạo', topup: '💳 Nạp ví', refund: '💸 Hoàn tiền' };
 
-function isCounted(a) { return a.countFrom <= dayStart(Date.now()); }
+function addMoney() {
+  const fund = selFund();
+  if (!fund) return;
+  const amount = parseInt($('addAmount').value, 10);
+  if (!amount || amount < 1000) return toast('⚠️ Số tiền nạp tối thiểu 1.000 ₫!', 'warn');
+  if (amount > state.wallet) return toast(`❌ Ví không đủ! Cần ${fmt(amount)} nhưng ví chỉ có ${fmt(state.wallet)}`, 'error');
 
-function totalSaved() { return data.amounts.filter(isCounted).reduce((s, a) => s + a.value, 0); }
-function pendingAmount() { return data.amounts.filter(a => !isCounted(a)).reduce((s, a) => s + a.value, 0); }
+  const mode = document.querySelector('input[name="addMode"]:checked').value;
 
-/* =========================================================
-   GIAO DIỆN
-   ========================================================= */
-function render() {
-  const total = totalSaved();
-  $("totalMoney").textContent = fmt(total);
-  $("statCount").textContent = data.amounts.length;
-  $("statLast").textContent = fmtTime(data.lastUpdate);
-
-  const goalName = data.goalType === "khac"
-    ? (data.goalCustom || "✨ Mục tiêu riêng")
-    : (GOAL_LABELS[data.goalType] || "—");
-  $("statGoal").textContent = data.goalAmount > 0 ? `${goalName} (${fmt(data.goalAmount)})` : goalName;
-
-  const pct = data.goalAmount > 0 ? Math.min(100, Math.round((total / data.goalAmount) * 100)) : 0;
-  $("progressFill").style.width = pct + "%";
-  $("progressPct").textContent = pct + "%";
-  $("progressHint").textContent = data.goalAmount > 0
-    ? (pct >= 100 ? "🎉 Chúc mừng! Bạn đã hoàn thành mục tiêu tiết kiệm!"
-                  : `Bạn đã tiết kiệm được ${pct}% — cố lên!`)
-    : "Nạp tiền để bắt đầu hành trình nhé!";
-
-  // 🗓️ Tự động tính ngày = tháng - năm: hiện SỐ NGÀY, dưới là THÁNG
-  if (data.endDate) {
-    const daysLeft = Math.max(0, Math.ceil((dayStart(new Date(data.endDate).getTime()) - dayStart(Date.now())) / DAY_MS));
-    $("statDays").textContent = daysLeft;
-    const monthsLeft = daysLeft / 30; // quy đổi ngày → tháng (30 ngày = 1 tháng)
-    $("statMonths").textContent = daysLeft === 0
-      ? "Hết hạn hôm nay!"
-      : `≈ ${monthsLeft < 1 ? monthsLeft.toFixed(2) : monthsLeft.toFixed(1)} tháng`;
+  if (mode === 'instant') {
+    state.wallet -= amount;
+    fund.saved += amount;
+    state.history.unshift({ id: uid(), amount, time: nowMs(), mode: 'instant', status: 'done', fundId: fund.id });
+    toast(`⚡ Đã chuyển ${fmt(amount)} từ ví vào quỹ!`, 'success');
+    afterBalanceChange(fund);
   } else {
-    $("statDays").textContent = "—";
-    $("statMonths").textContent = "—";
-  }
-
-  // Ghi chú tiền đang chờ tính + bật panel 2 phương án
-  const pend = pendingAmount();
-  $("countNote").textContent = pend > 0
-    ? `⏳ ${fmt(pend)} đang chờ — tiền nạp hôm nay sẽ tính từ 0h ngày mai`
-    : "";
-  // ⏳ Có tiền đang chờ → hiện panel 2 phương án (không tiết kiệm nữa / hoàn tiền)
-  const pa = $("pendingActions");
-  if (pend > 0) {
-    $("pendingTotal").textContent = fmt(pend);
-    pa.classList.remove("hidden");
-  } else {
-    pa.classList.add("hidden");
-  }
-
-  // Lịch sử
-  const list = $("historyList");
-  if (!data.amounts.length) {
-    list.innerHTML = '<li class="empty">Chưa có giao dịch nào.</li>';
-  } else {
-    list.innerHTML = data.amounts.slice(-30).reverse().map(a => {
-      const wait = !isCounted(a);
-      return `<li><span class="time">${fmtTime(a.at)}${wait ? ' <span class="pending">⏳ tính từ ' + fmtDate(a.countFrom) + '</span>' : ""}</span><span class="amt">+${fmt(a.value)}</span></li>`;
-    }).join("");
-  }
-
-  $("goalSelect").value = data.goalType;
-  $("customGoalField").style.display = data.goalType === "khac" ? "block" : "none";
-  $("customGoal").value = data.goalCustom || "";
-  $("goalAmount").value = data.goalAmount || "";
-  $("startDate").value = data.startDate || "";
-  $("endDate").value = data.endDate || "";
-
-  // 🎉 Kiểm tra kết quả tiết kiệm (chúc mừng / thất bại)
-  checkGoalResult();
-}
-
-/* =========================================================
-   ➕ NẠP TIỀN — nhân lên khi trùng + quy tắc ngày đầu không tính
-   ========================================================= */
-$("btnAdd").addEventListener("click", () => {
-  const raw = parseFloat($("inputAmount").value);
-
-  if (!raw || raw < MIN_DEPOSIT) return toast(`⚠️ Số tiền tối thiểu là ${fmt(MIN_DEPOSIT)}, dưới mức này không cho nạp!`, "error");
-
-  const value = raw;
-  const at = Date.now();
-  const countFrom = computeCountFrom(at);
-  data.amounts.push({ value, at, countFrom });
-
-  if (countFrom > at) {
-    toast(`💸 Đã nạp ${fmt(value)} — tiền nạp hôm nay chưa tính, sẽ tự động cộng vào quỹ từ 0h ngày mai (${fmtDate(countFrom)})!`, "warn");
-  } else {
-    toast(`💸 Đã nạp ${fmt(value)} vào quỹ!`, "success");
-  }
-
-  $("inputAmount").value = "";
-  render();
-  persistNow(); // ghi ngay cho chắc, còn bản lưu tự động vẫn chạy theo mốc riêng
-});
-
-/* =========================================================
-   🎯 MỤC TIÊU + NGÀY BẮT ĐẦU / KẾT THÚC
-   ========================================================= */
-$("goalSelect").addEventListener("change", () => {
-  $("customGoalField").style.display = $("goalSelect").value === "khac" ? "block" : "none";
-});
-
-$("btnSaveGoal").addEventListener("click", () => {
-  // 🚫 Đã có mục tiêu rồi mà còn bấm lưu thêm → TỪ CHỐI liền
-  if (data.goalAmount > 0) {
-    toast("🚫 Từ chối! Bạn đã có mục tiêu tiết kiệm rồi, không cho lưu thêm!", "error");
-    return;
-  }
-  const goalAmount = parseFloat($("goalAmount").value) || 0;
-  const start = $("startDate").value;
-  const end = $("endDate").value;
-
-  if (goalAmount < 1000) return toast("⚠️ Số tiền mục tiêu tối thiểu 1.000₫", "error");
-  if (start && end && new Date(end) < new Date(start))
-    return toast("⚠️ Ngày kết thúc phải sau ngày bắt đầu!", "error");
-
-  data.goalType = $("goalSelect").value;
-  data.goalCustom = $("customGoal").value.trim();
-  data.goalAmount = goalAmount;
-  data.startDate = start;
-  data.endDate = end;
-
-  // Tính lại countFrom cho các khoản cũ theo quy tắc ngày đầu không tính
-  data.amounts.forEach(a => { a.countFrom = computeCountFrom(a.at); });
-
-  render();
-  persistNow();
-  toast("🎯 Đã lưu mục tiêu tiết kiệm!", "success");
-});
-
-/* =========================================================
-   🗑️ RESET THỦ CÔNG
-   ========================================================= */
-$("btnReset").addEventListener("click", () => {
-  if (!data.amounts.length) return toast("⚠️ Không có tiền nào trong quỹ để hủy!", "error");
-  if (!confirm("🚫 Hủy bỏ tiết kiệm? Toàn bộ tiền trong quỹ sẽ bị xóa (tài khoản & mục tiêu vẫn giữ lại)!")) return;
-  data.amounts = [];
-  render();
-  persistNow();
-  toast("🚫 Đã hủy bỏ tiết kiệm — toàn bộ tiền trong quỹ đã bị xóa!", "warn");
-});
-
-/* =========================================================
-   ⏳ 2 PHƯƠNG ÁN CHO TIỀN ĐANG CHỜ
-   ========================================================= */
-
-// 🛑 Không tiết kiệm nữa → reset TOÀN BỘ tiền nạp vào quỹ về 0
-$("btnQuitSaving").addEventListener("click", () => {
-  if (!data.amounts.length) return toast("⚠️ Không có tiền nào trong quỹ để reset!", "error");
-  if (!confirm("🛑 Bạn quyết định KHÔNG TIẾT KIỆM nữa? Toàn bộ tiền nạp vào quỹ sẽ bị reset về 0!")) return;
-  data.amounts = [];
-  render();
-  persistNow();
-  toast("🛑 Đã dừng tiết kiệm — toàn bộ tiền nạp reset về 0!", "warn");
-});
-
-// 💰 Hoàn tiền → hệ thống trả lại tiền đang chờ cho người dùng
-$("btnRefund").addEventListener("click", () => {
-  const pending = data.amounts.filter(a => !isCounted(a));
-  if (!pending.length) return toast("⚠️ Không có khoản nào đang chờ để hoàn!", "error");
-  const refundTotal = pending.reduce((s, a) => s + a.value, 0);
-  if (!confirm(`💰 Hệ thống sẽ hoàn lại ${fmt(refundTotal)} về ví của bạn. Tiếp tục?`)) return;
-  // Chỉ hoàn các khoản đang chờ, giữ nguyên tiền đã tính trong quỹ
-  data.amounts = data.amounts.filter(isCounted);
-  render();
-  persistNow();
-  toast(`💰 Hoàn tiền thành công! ${fmt(refundTotal)} đã quay về ví của bạn.`, "success");
-});
-
-/* =========================================================
-   ☠️ HỦY BỎ TOÀN BỘ — xóa dữ liệu VÀ tài khoản (vùng nguy hiểm)
-   ========================================================= */
-$("btnDestroy").addEventListener("click", () => {
-  if (!confirm("⚠️ CẢNH BÁO NGUY HIỂM: Hành động này xóa TRẮNG dữ liệu tiết kiệm VÀ TÀI KHOẢN của bạn vĩnh viễn!")) return;
-  if (!confirm("☠️ Xác nhận LẦN CUỐI: Không thể hoàn tác. Chắc chắn hủy bỏ toàn bộ?")) return;
-  const user = currentUser;
-  stopAutoSave();
-  localStorage.removeItem(dataKey());          // xóa dữ liệu tiết kiệm
-  const users = getUsers();
-  delete users[user];                           // xóa tài khoản
-  saveUsers(users);
-  localStorage.removeItem(LS_SESSION);
-  currentUser = null;
-  data = null;
-  $("appScreen").classList.add("hidden");
-  $("authScreen").classList.remove("hidden");
-  $("authPass").value = "";
-  $("authUser").value = "";
-  toast("☠️ Đã hủy bỏ toàn bộ dữ liệu và tài khoản!", "error");
-});
-
-/* =========================================================
-   🎉 POPUP CHÚC MỪNG / THẤT BẠI — theo dõi tiến trình tự động
-   ========================================================= */
-let winShown = false, failShown = false;
-
-function showResult(type, icon, title, text) {
-  const modal = $("resultModal");
-  modal.querySelector(".modal").className = "modal glass result-modal " + type;
-  $("resultIcon").textContent = icon;
-  $("resultTitle").textContent = title;
-  $("resultText").textContent = text;
-  modal.classList.remove("hidden");
-}
-
-$("btnResultClose").addEventListener("click", () => {
-  $("resultModal").classList.add("hidden");
-});
-
-// Tự động phát hiện kết quả mỗi lần render: đủ tiến trình → chúc mừng,
-// quá hạn mà chưa đủ → thất bại
-function checkGoalResult() {
-  if (!data || data.goalAmount <= 0) return;
-  const total = totalSaved();
-  if (total >= data.goalAmount) {
-    if (!winShown) {
-      winShown = true;
-      showResult("success", "🎉", "Chúc mừng bạn!",
-        `Bạn đã hoàn thành mục tiêu ${fmt(data.goalAmount)}! Tổng tiền tiết kiệm hiện tại: ${fmt(total)}. Bạn thật tuyệt vời, tiếp tục phát huy nhé!`);
+    let readyAt;
+    if (mode === 'afterHour') {
+      readyAt = nowMs() + 3600000;
+    } else {
+      const v = $('scheduleTime').value;
+      if (!v) return toast('⚠️ Vui lòng chọn thởi gian cộng tiền!', 'warn');
+      readyAt = new Date(v).getTime();
+      if (readyAt <= nowMs()) return toast('❌ Thởi gian hẹn phải ở tương lai!', 'error');
     }
-    failShown = false;
-  } else if (data.endDate && dayStart(new Date(data.endDate)) < dayStart(Date.now())) {
-    if (!failShown) {
-      failShown = true;
-      const pct = Math.round((total / data.goalAmount) * 100);
-      showResult("fail", "😢", "Tiếc quá, chưa đạt mục tiêu!",
-        `Thời hạn tiết kiệm đã kết thúc nhưng bạn mới đạt ${fmt(total)} / ${fmt(data.goalAmount)} (${pct}%). Đừng nản, hãy đặt mục tiêu mới và cố gắng hơn nhé!`);
-    }
-    winShown = false;
-  } else {
-    winShown = false;
-    failShown = false;
+    const createdAt = nowMs();
+    state.pending.push({ id: uid(), fundId: fund.id, amount, mode, readyAt, createdAt });
+    state.history.unshift({ id: uid(), amount, time: createdAt, mode, status: 'pending', readyAt, fundId: fund.id });
+    toast(`📌 Đã hẹn cộng ${fmt(amount)} — ${fmtTime(readyAt)}`, 'info');
+    persist();
+  }
+  $('addAmount').value = '';
+  renderAll();
+}
+
+function afterBalanceChange(fund) {
+  if (fund.saved >= fund.goalAmount && !fund.successShown) {
+    fund.successShown = true;
+    persist();
+    showResult(true, '🎉 Chúc mừng!',
+      `Bạn đã tiết kiệm đủ ${fmt(fund.goalAmount)} cho mục tiêu "${fund.goalType}"! Hãy tự thưởng cho mình nhé! ✨`);
+  }
+  checkFailCondition(fund);
+  persist();
+  renderAll();
+}
+
+function checkFailCondition(fund) {
+  if (!fund || fund.successShown || fund.failShown) return;
+  const today = parseDate(todayStr());
+  if (parseDate(fund.endDate) < today && fund.saved < fund.goalAmount) {
+    fund.failShown = true;
+    persist();
+    showResult(false, '😢 Tiết kiệm chưa đạt!',
+      `Quỹ "${fund.goalType}" đã quá hạn mà mới có ${fmt(fund.saved)}/${fmt(fund.goalAmount)}. Cố gắng hơn ở quỹ tiếp theo nhé! 💪`);
   }
 }
 
-/* =========================================================
-   💾 LƯU TỰ ĐỘNG — MỐC THỜI GIAN NGẪU NHIÊN, KHÔNG LIÊN TỤC
-   - Timer chạy ĐỘC LẬP: user thao tác bao nhiêu cũng không reset lịch
-   - Mỗi lần lưu xong → rút thăm mốc tiếp theo (15s–90s ngẫu nhiên)
-   - Khi đang lưu: hiện popup cảnh báo; user thoát → HỦY bản lưu đó
-   ========================================================= */
-function scheduleAutoSave() {
+/* --- 4 nút xử lý: 1) Không tiết kiệm nữa  2) Hoàn tiền --- */
+function stopSaving() {
+  const fund = selFund();
+  if (!fund) return;
+  askConfirm('🛑 Ngừng tiết kiệm?',
+    `Bạn sẽ NGỪNG tiết kiệm quỹ "${fund.goalType}". Toàn bộ ${fmt(fund.saved)} trong quỹ sẽ reset về 0 (không hoàn lại ví). Tiếp tục?`,
+    () => {
+      const lost = fund.saved;
+      fund.saved = 0;
+      state.pending = state.pending.filter(p => p.fundId !== fund.id);
+      persist();
+      renderAll();
+      toast(`🛑 Đã ngừng tiết kiệm "${fund.goalType}" — ${fmt(lost)} đã reset về 0!`, 'warn', 4500);
+    });
+}
+
+function refundFund() {
+  const fund = selFund();
+  if (!fund) return;
+  if (fund.saved <= 0) return toast('⚠️ Quỹ này chưa có tiền để hoàn!', 'warn');
+  askConfirm('💸 Hoàn tiền về ví?',
+    `An toàn 100% — ${fmt(fund.saved)} trong quỹ "${fund.goalType}" sẽ được chuyển toàn bộ về ví của bạn.`,
+    () => {
+      const amt = fund.saved;
+      state.wallet += amt;
+      fund.saved = 0;
+      state.history.unshift({ id: uid(), amount: amt, time: nowMs(), mode: 'refund', status: 'done', fundId: fund.id });
+      persist();
+      renderAll();
+      toast(`💸 Đã hoàn ${fmt(amt)} về ví an toàn!`, 'success');
+    });
+}
+
+/* ---------- Pending loop + countdown ---------- */
+function startPendingLoop() {
+  clearInterval(pendingTimer);
+  pendingTimer = setInterval(() => { checkPending(false); renderPendingCountdowns(); }, 1000);
+}
+
+function checkPending(silent) {
+  if (!state.pending.length) { if (!silent) renderPending(); return; }
+  const t = nowMs();
+  const due = state.pending.filter(p => p.readyAt <= t);
+  if (!due.length) { if (!silent) renderPending(); return; }
+  state.pending = state.pending.filter(p => p.readyAt > t);
+  due.forEach(p => {
+    const fund = state.funds.find(f => f.id === p.fundId);
+    if (!fund) return;
+    state.wallet -= p.amount;
+    fund.saved += p.amount;
+    const h = state.history.find(x => x.status === 'pending' && x.amount === p.amount && x.time === p.createdAt && x.fundId === p.fundId);
+    if (h) h.status = 'done';
+    else state.history.unshift({ id: uid(), amount: p.amount, time: t, mode: p.mode, status: 'done', fundId: fund.id });
+    toast(`💰 ${fmt(p.amount)} vừa được cộng vào quỹ "${fund.goalType}"!`, 'success');
+  });
+  const f = selFund();
+  if (f) afterBalanceChange(f); else { persist(); renderAll(); }
+}
+
+function cancelPending(id) {
+  const p = state.pending.find(x => x.id === id);
+  state.pending = state.pending.filter(x => x.id !== id);
+  if (p) toast(`🗑️ Đã hủy lệnh cộng ${fmt(p.amount)} — tiền chưa trừ ví`, 'info');
+  persist();
+  renderAll();
+}
+
+function fmtCountdown(ms) {
+  if (ms <= 0) return '00:00:00';
+  const s = Math.floor(ms / 1000);
+  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}`;
+}
+
+function renderPendingCountdowns() {
+  document.querySelectorAll('[data-cd]').forEach(el => {
+    const p = state.pending.find(x => x.id === el.dataset.cd);
+    el.textContent = p ? fmtCountdown(p.readyAt - nowMs()) : '--:--:--';
+  });
+}
+
+/* ============================================================
+   AUTO SAVE (random 5s – 30s, non-continuous)
+   ============================================================ */
+function startAutoSave() {
   clearTimeout(saveTimer);
-  const delay = SAVE_MIN_MS + Math.random() * (SAVE_MAX_MS - SAVE_MIN_MS);
+  scheduleNextSave();
+}
+function scheduleNextSave() {
+  clearTimeout(saveTimer);
+  const delay = rand(5000, 30000);
+  if ($('nextSaveTime')) $('nextSaveTime').textContent = fmtTime(nowMs() + delay);
   saveTimer = setTimeout(runAutoSave, delay);
 }
-
-function stopAutoSave() { clearTimeout(saveTimer); isSaving = false; }
-
 function runAutoSave() {
-  isSaving = true;
-  pendingSnapshot = JSON.stringify(data);
+  isSaving = true; savingCancelled = false;
+  const overlay = $('savingOverlay');
+  overlay.classList.remove('hidden');
+  const fill = $('saveProgressFill');
+  let pct = 0;
+  fill.style.width = '0%';
+  const iv = setInterval(() => {
+    if (savingCancelled) {
+      clearInterval(iv);
+      overlay.classList.add('hidden');
+      isSaving = false;
+      toast('🚫 Lưu dữ liệu đã bị hủy do bạn rời khỏi trang!', 'warn');
+      scheduleNextSave();
+      return;
+    }
+    pct += rand(12, 22);
+    if (pct >= 100) {
+      pct = 100;
+      clearInterval(iv);
+      persist();
+      $('lastSaveTime').textContent = fmtTime(nowMs());
+      setTimeout(() => {
+        overlay.classList.add('hidden');
+        isSaving = false;
+        toast('💾 Dữ liệu đã được lưu thành công!', 'success', 2200);
+        scheduleNextSave();
+      }, 350);
+    }
+    fill.style.width = pct + '%';
+  }, 300);
+}
+window.addEventListener('beforeunload', () => { if (isSaving) savingCancelled = true; });
+document.addEventListener('visibilitychange', () => { if (document.hidden && isSaving) savingCancelled = true; });
 
-  const modal = $("saveModal");
-  modal.classList.remove("hidden");
-
-  setTimeout(() => {
-    if (!isSaving) return; // đã bị hủy do user thoát
-    localStorage.setItem(dataKey(), pendingSnapshot);
-    pendingSnapshot = null;
-    isSaving = false;
-    modal.classList.add("hidden");
-    toast("💾 Hệ thống đã lưu dữ liệu thành công!", "success");
-    scheduleAutoSave(); // rút thăm mốc ngẫu nhiên tiếp theo
-  }, 2500);
+/* ============================================================
+   PING SYSTEM
+   ============================================================ */
+async function measurePing() {
+  const badge = $('pingBadge');
+  const t0 = performance.now();
+  try {
+    await fetch('https://www.gstatic.com/generate_204', { mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(4000) });
+    const ms = Math.round(performance.now() - t0);
+    badge.textContent = `🌐 Ping: ${ms}ms`;
+    badge.className = 'ping-badge ' + (ms < 300 ? 'good' : 'bad');
+  } catch {
+    badge.textContent = '🌐 Ping: offline / mạng yếu';
+    badge.className = 'ping-badge bad';
+  }
+}
+function startPingLoop() {
+  clearInterval(pingTimer);
+  measurePing();
+  pingTimer = setInterval(measurePing, 15000);
 }
 
-// User THOÁT khi đang lưu → HỦY BỎ lần lưu này
-window.addEventListener("beforeunload", (e) => {
-  if (isSaving) {
-    isSaving = false;
-    pendingSnapshot = null;
-    e.preventDefault();
-    e.returnValue = "⚠️ Hệ thống đang lưu, thoát ngay sẽ HỦY bản lưu này!";
-  }
-});
+/* ============================================================
+   RENDER
+   ============================================================ */
+function showSetup() {
+  $('setupCard').classList.remove('hidden');
+  $('btnCancelSetup').classList.toggle('hidden', state.funds.length === 0);
+  $('dashboard').classList.add('hidden');
+}
+function hideSetup() {
+  $('setupCard').classList.add('hidden');
+  $('goalType').value = ''; $('goalAmount').value = ''; $('startAmount').value = '';
+  $('startDate').value = ''; $('endDate').value = '';
+  updateDateInfo();
+}
 
-// Tab bị ẩn đột ngột khi đang lưu → hủy luôn
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden && isSaving) {
-    isSaving = false;
-    pendingSnapshot = null;
-    $("saveModal").classList.add("hidden");
-    toast("⚠️ Phát hiện bạn rời đi — lần lưu này đã bị HỦY!", "error");
-    scheduleAutoSave();
-  }
-});
+function renderAll() {
+  renderAvatar();
+  $('walletBalance').textContent = fmt(state.wallet);
+  $('walletHint').textContent = fmt(state.wallet);
 
-/* =========================================================
-   📡 DÒ PING TỰ ĐỘNG
-   ========================================================= */
-async function checkPing() {
-  const dot = $("pingDot"), txt = $("pingText");
-  if (!navigator.onLine) {
-    dot.className = "ping-dot offline";
-    txt.textContent = "Mất kết nối mạng!";
+  /* fund tabs */
+  const hasFunds = state.funds.length > 0;
+  $('fundListCard').classList.toggle('hidden', !hasFunds);
+  $('fundCount').textContent = state.funds.length;
+  if (hasFunds) {
+    $('fundTabs').innerHTML = state.funds.map(f => `
+      <button class="fund-tab ${f.id === selectedFundId ? 'active' : ''}" data-fund="${f.id}">
+        <span>${GOAL_ICONS[f.goalType] || '🎯'}</span> ${f.goalType}
+        <span data-delfund="${f.id}" class="ft-del" title="Xóa quỹ">✖</span>
+      </button>`).join('');
+    $('fundTabs').querySelectorAll('[data-fund]').forEach(b => {
+      b.onclick = e => {
+        if (e.target.dataset.delfund) return;
+        selectedFundId = b.dataset.fund;
+        renderAll();
+      };
+    });
+    $('fundTabs').querySelectorAll('[data-delfund]').forEach(b => {
+      b.onclick = e => { e.stopPropagation(); deleteFund(b.dataset.delfund); };
+    });
+  }
+
+  /* dashboard theo quỹ đang chọn */
+  const fund = selFund();
+  $('dashboard').classList.toggle('hidden', !fund);
+  /* ẩn màn hình thiết lập nếu đang xem một quỹ */
+  $('setupCard').classList.toggle('hidden', !!fund);
+  if (fund) { renderDashboard(fund); renderPending(); }
+  renderHistory();
+}
+
+function renderDashboard(fund) {
+  $('displayGoalName').textContent = fund.goalType;
+  $('displayGoalType').textContent = GOAL_ICONS[fund.goalType] || '🎯';
+  $('displayGoalPeriod').textContent = `${fmtDate(parseDate(fund.startDate))} → ${fmtDate(parseDate(fund.endDate))}`;
+  $('displaySaved').textContent = fmt(fund.saved);
+  $('displayTarget').textContent = fmt(fund.goalAmount);
+
+  const pct = Math.min(100, Math.round(fund.saved / fund.goalAmount * 100));
+  $('progressFill').style.width = pct + '%';
+  $('progressPercent').textContent = pct + '%';
+  $('progressRemain').textContent = 'Còn lại: ' + fmt(Math.max(0, fund.goalAmount - fund.saved));
+
+  /* day counting: first day doesn't count, money counts from next day */
+  const today = parseDate(todayStr());
+  const start = parseDate(fund.startDate);
+  const end = parseDate(fund.endDate);
+  let note;
+  if (today <= start) {
+    const days = Math.round((end - start) / dayMs) + 1;
+    $('statDays').textContent = days;
+    $('statMonths').textContent = (days / 30).toFixed(1);
+    note = '🌙 Hôm nay không tính tiền — bắt đầu tính từ ngày mai';
+  } else {
+    const counted = Math.round((Math.min(today, end) - start) / dayMs);
+    $('statDays').textContent = counted;
+    $('statMonths').textContent = (counted / 30).toFixed(1);
+    note = today > end ? '🏁 Đã quá hạn tiết kiệm' : '📈 Đang trong thởi gian tiết kiệm';
+  }
+  $('statNote').innerHTML = note;
+}
+
+function renderPending() {
+  const fund = selFund();
+  const box = $('pendingList');
+  const list = fund ? state.pending.filter(p => p.fundId === fund.id) : [];
+  if (!list.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--text-dim);margin-top:4px">⏳ Đang chờ cộng tiền (đếm ngược):</div>' +
+    list.map(p => `
+      <div class="pending-item pending">
+        <span class="p-amount">${fmt(p.amount)}</span>
+        <span class="p-time">${MODE_LABELS[p.mode]} · <b data-cd="${p.id}">--:--:--</b><br>${fmtTime(p.readyAt)}</span>
+        <button data-cancel="${p.id}" title="Hủy">✖️</button>
+      </div>`).join('');
+  box.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => cancelPending(b.dataset.cancel));
+  renderPendingCountdowns();
+}
+
+function renderHistory() {
+  const list = $('historyList');
+  if (!state.history.length) {
+    list.innerHTML = '<li class="history-empty">Chưa có giao dịch nào</li>';
     return;
   }
-  const start = performance.now();
-  try {
-    await fetch(location.href.split("#")[0], { method: "HEAD", cache: "no-store" });
-    const ms = Math.round(performance.now() - start);
-    dot.className = "ping-dot " + (ms < 300 ? "online" : "warn");
-    txt.textContent = `Ping: ${ms}ms`;
-  } catch {
-    dot.className = "ping-dot offline";
-    txt.textContent = "Mất kết nối!";
-  }
-}
-setInterval(checkPing, 10000);
-
-// 🌅 TỰ ĐỘNG PHÁT HIỆN QUA NGÀY MỚI → cập nhật lại số tiền được tính
-let lastKnownDay = dayStart(Date.now());
-setInterval(() => {
-  const today = dayStart(Date.now());
-  if (today !== lastKnownDay) {
-    lastKnownDay = today; // trời sáng, qua ngày mới rồi!
-    render(); // tiền nạp hôm qua giờ được tính vào tổng tự động
-    toast("🌅 Qua ngày mới! Hệ thống đã tự động cập nhật lại số tiền tiết kiệm của bạn.", "success");
-  }
-}, 30000); // kiểm tra mỗi 30 giây
-window.addEventListener("online", checkPing);
-window.addEventListener("offline", checkPing);
-
-/* =========================================================
-   KHỞI ĐỘNG
-   ========================================================= */
-function startApp(user) {
-  currentUser = user;
-  loadData();
-  $("helloName").textContent = user;
-  $("authScreen").classList.add("hidden");
-  $("appScreen").classList.remove("hidden");
-  render();
-  checkPing();
-  scheduleAutoSave(); // lịch lưu tự động chạy riêng, ngẫu nhiên
-  toast(`👋 Chào mừng ${user} quay lại!`, "success");
+  list.innerHTML = state.history.slice(0, 50).map(h => `
+    <li class="history-item">
+      <span>${MODE_LABELS[h.mode] || '💰'} ${h.status === 'pending' ? '<span style="color:var(--gold)">(chờ)</span>' : ''}</span>
+      <span style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+        <span class="h-amount ${h.mode === 'refund' || h.mode === 'topup' ? 'minus' : ''}">${h.mode === 'refund' || h.mode === 'topup' ? '·' : '+'}${fmt(h.amount)}</span>
+        <span class="h-time">${fmtTime(h.time)}</span>
+      </span>
+    </li>`).join('');
 }
 
-(function init() {
-  const session = localStorage.getItem(LS_SESSION);
-  if (session && getUsers()[session]) startApp(session);
-})();
+/* ============================================================
+   POPUPS
+   ============================================================ */
+function showResult(success, title, desc) {
+  $('resultPopup').className = 'popup result-popup ' + (success ? 'success' : 'fail');
+  $('resultIcon').textContent = success ? '🎉' : '💔';
+  $('resultTitle').textContent = title;
+  $('resultDesc').textContent = desc;
+  $('resultOverlay').classList.remove('hidden');
+}
+$('btnResultClose').onclick = () => $('resultOverlay').classList.add('hidden');
+
+/* ---------- Confirm modal ---------- */
+let confirmCb = null;
+function askConfirm(title, desc, cb) {
+  $('confirmTitle').textContent = title;
+  $('confirmDesc').textContent = desc;
+  confirmCb = cb;
+  $('confirmModal').classList.remove('hidden');
+}
+$('btnConfirmNo').onclick = () => { $('confirmModal').classList.add('hidden'); confirmCb = null; };
+$('btnConfirmYes').onclick = () => { $('confirmModal').classList.add('hidden'); if (confirmCb) confirmCb(); confirmCb = null; };
+
+/* ============================================================
+   SETTINGS
+   ============================================================ */
+function openSettings() {
+  $('lastSaveTime').textContent = state.lastSave ? fmtTime(state.lastSave) : '--';
+  $('settingsModal').classList.remove('hidden');
+}
+function cancelPlan() {
+  const total = state.funds.reduce((s, f) => s + f.saved, 0);
+  askConfirm('🗑️ Hủy bỏ toàn bộ tiết kiệm?',
+    `Toàn bộ ${state.funds.length} quỹ (chứa ${fmt(total)}) và tiền trong ví ${fmt(state.wallet)} sẽ bị XÓA VĨNH VIỄN. Không thể hoàn tác!`,
+    () => {
+      state = defaultState();
+      selectedFundId = null;
+      persist();
+      $('settingsModal').classList.add('hidden');
+      renderAll();
+      toast('🗑️ Đã xóa toàn bộ dữ liệu tiết kiệm!', 'error', 4200);
+    });
+}
+
+/* ============================================================
+   TIMERS MGMT
+   ============================================================ */
+function stopTimers() {
+  clearTimeout(saveTimer);
+  clearInterval(pendingTimer);
+  clearInterval(pingTimer);
+  clearInterval(clockTimer);
+}
+
+/* ============================================================
+   EVENT BINDING
+   ============================================================ */
+$('btnStartPlan').onclick = startPlan;
+$('startDate').onchange = updateDateInfo;
+$('endDate').onchange = updateDateInfo;
+$('btnAddMoney').onclick = addMoney;
+$('btnTopup').onclick = topupWallet;
+$('btnStopSaving').onclick = stopSaving;
+$('btnRefund').onclick = refundFund;
+$('btnSettings').onclick = openSettings;
+$('btnCloseSettings').onclick = () => $('settingsModal').classList.add('hidden');
+$('btnCancelPlan').onclick = cancelPlan;
+$('btnLogout').onclick = doLogout;
+$('btnNewFund').onclick = () => {
+  if (state.funds.length >= MAX_FUNDS) return toast(`🚫 Đã đạt giới hạn ${MAX_FUNDS} quỹ!`, 'error');
+  selectedFundId = null;
+  showSetup();
+};
+$('btnCancelSetup').onclick = () => {
+  hideSetup();
+  if (state.funds.length) { selectedFundId = state.funds[0].id; renderAll(); }
+  else showSetup();
+};
+document.querySelectorAll('input[name="addMode"]').forEach(r => {
+  r.onchange = () => {
+    const v = document.querySelector('input[name="addMode"]:checked').value;
+    $('scheduleField').classList.toggle('hidden', v !== 'scheduled');
+  };
+});
+(() => { const t = todayStr(); $('startDate').min = t; $('endDate').min = t; })();
+
+/* close overlays on backdrop click */
+[$('settingsModal'), $('confirmModal')].forEach(ov => {
+  ov.addEventListener('click', e => { if (e.target === ov) ov.classList.add('hidden'); });
+});
+
+/* ---------- BOOT ---------- */
+initAuth();
